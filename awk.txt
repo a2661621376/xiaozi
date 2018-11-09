@@ -1,0 +1,96 @@
+#!/bin/sh
+yesterday=`date -d "-1 day" +%Y-%m-%d` 
+ 
+if [ "$1" != "" ]; then
+	logfile=$1
+else
+	logfile="/data/PP-log/*PPIm.access.log.$yesterday"
+fi
+ 
+gawk -F"\t" '
+	#function getTitle(name){
+	#	if(name == "main_user") return "我的用户";
+	#	else return "其他";
+	#}
+	($3 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/){ #过滤脏数据
+	if($4 == "getActiveUser"){
+		#活跃用户数统计
+		user[$3"_"$6] ++;
+		#活跃安装id统计
+		install[$3"_"$5] ++;
+	}else if($9 == "onlineTime"){
+		#用户在线时长统计
+		tmp = ($11 - $10)/1000;
+		if(tmp > 0 && tmp < 86400){
+			onlineCount[$3] ++;
+			onlineTime[$3] += tmp;
+		}
+	}
+}END{
+	for(k in user){
+		split(k, arr, "_");
+		userOnly[arr[1]] ++;
+	}
+	for(k in install){
+		split(k, arr, "_");
+		installOnly[arr[1]] ++;
+	}
+	#活跃数统计:版本,用户活跃,安装活跃 
+	for(k in userOnly){
+		if(k != "total")
+			print "insert into danalysis(analysisdate,version,useractive,installactive) values(\047'$yesterday'\047,\047"k"\047,"userOnly[k]","installOnly[k]")";
+	}
+ 
+	#在线时长统计:版本,平均在线时长(s) 
+	for(k in onlineTime){
+		print "update danalysis set avgonlinetime="onlineTime[k]/onlineCount[k]" where analysisdate=\047'$yesterday'\047 and version=\047"k"\047";
+	}
+ 
+}' $logfile
+ 
+#一日留存率和两日留存率统计
+oneday=`date -d "-2 day" "+%Y-%m-%d"`
+twoday=`date -d "-3 day" "+%Y-%m-%d"`
+onelogfile="/data/PP-log/*PPIm.access.log.$oneday"
+twologfile="/data/PP-log/*PPIm.access.log.$twoday"
+ 
+awk -F"\t" 'BEGIN{d=0;}($3 ~ /^[0-9]+\.[0-9]+\.[0-9]+$/){ #过滤脏数据
+	split(FILENAME, date, "."); #获取文件名上的日期,其中FILENAME表示当前读取的文件名
+	len = length(date);
+	if(d == 0 || two[0] == date[len]){ #统计两日前的日志(twologfile)
+		two[0] = date[len];
+		d = 1;
+		two[$3"_"$6] ++;
+	}else if(d == 1 || one[0] == date[len]){ #统计一日前的日志(onelogfile)
+		d = 2;
+		one[0] = date[len];
+		one[$3"_"$6] ++;
+	}else{ #统计当日的日志(logfile)
+		thisday[$6] ++;
+	}
+}END{
+	delete two[0];
+	delete one[0];
+	for(k in two){
+		split(k, arr, "_");
+		total[arr[1]] ++;
+		t[arr[1]] ++;
+		if(arr[2] in thisday) remain[arr[1]] ++;
+	}
+ 
+	for(k in one){
+		split(k, arr, "_");
+		if(arr[2] in thisday) remain2[arr[1]] ++;
+		total2[arr[1]] ++;
+		t[arr[1]] ++;
+	}
+	#留存率统计:版本,一日留存,两日留存
+	for(k in t){
+		onerate = "-";
+		tworate = "-"
+		if(k in total2) onerate=remain2[k]/total2[k];
+		if(k in total) tworate=remain[k]/total[k];
+		print "update danalysis set onedayexist="onerate",twodayexist="tworate" where analysisdate=\047'$yesterday'\047 and version=\047"k"\047";
+	}
+ 
+}' $twologfile $onelogfile $logfile
